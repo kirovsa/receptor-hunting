@@ -89,7 +89,7 @@ UNIPROT_QUERY <- paste0(
   "organism_id:9606 ",
   "AND reviewed:true ",
   "AND keyword:KW-0675 ",
-  'AND locations:(location:"Cell membrane")'
+  'AND go:0005886'
 )
 
 UNIPROT_FIELDS    <- "accession,gene_names,protein_name,xref_ensembl"
