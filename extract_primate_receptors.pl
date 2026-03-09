@@ -425,7 +425,7 @@ sub run_pipeline {
 
         my $accession = $entry->{"Entry"} // "?";
 
-        my $cross_ref = $entry->{"Ensembl transcript"} // $entry->{"Cross-reference (Ensembl)"} // "";
+        my $cross_ref = $entry->{"Ensembl transcript"} || $entry->{"Ensembl"} || "";
         my $ensembl_ids = parse_ensembl_ids($cross_ref);
 
         if (!@$ensembl_ids) {
