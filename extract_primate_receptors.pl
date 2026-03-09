@@ -114,13 +114,25 @@ sub _get {
     return $res;
 }
 
-# Follow the 'next' URL in an HTTP Link header
+# Follow the 'next' URL in an HTTP Link header.
+# $link_header may be a plain string or an array-ref (HTTP::Tiny joins
+# repeated headers with ", " for most fields, but being defensive here
+# protects against any version that returns an array-ref instead).
 sub _next_link {
     my ($link_header) = @_;
-    return undef if !defined($link_header) || $link_header eq "";
+    return undef unless defined($link_header);
 
-    for my $part (split(/\s*,\s*/, $link_header)) {
-        if ($part =~ /<([^>]+)>\s*;\s*rel=\"next\"/) {
+    # Normalise to a flat list of comma-separated parts.
+    my @parts;
+    if (ref($link_header) eq 'ARRAY') {
+        @parts = map { split(/\s*,\s*/, $_) } @$link_header;
+    } else {
+        return undef if $link_header eq "";
+        @parts = split(/\s*,\s*/, $link_header);
+    }
+
+    for my $part (@parts) {
+        if ($part =~ /<([^>]+)>\s*;\s*rel="next"/) {
             return $1;
         }
     }
@@ -134,8 +146,11 @@ sub fetch_uniprot_receptors {
     log_info("Querying UniProt for human membrane-bound receptors ...");
 
     my @results;
+    my @col_headers;   # captured from the first page; reused for all subsequent pages
+    my %seen_urls;     # guard against infinite-loop if the same next URL repeats
+    my $page_num = 0;
 
-    # First request uses query params. UniProt returns full next link for pagination.
+    # First request uses query params. UniProt returns a full next-link for pagination.
     my $url = $UNIPROT_SEARCH_URL . "?"
         . "query="  . uri_escape_utf8($UNIPROT_QUERY)
         . "&format=" . uri_escape_utf8($UNIPROT_FORMAT)
@@ -143,6 +158,14 @@ sub fetch_uniprot_receptors {
         . "&size="   . uri_escape_utf8($UNIPROT_PAGE_SIZE);
 
     while (defined $url) {
+        if ($seen_urls{$url}++) {
+            log_warn("Pagination loop detected – same URL seen twice; stopping.");
+            last;
+        }
+
+        $page_num++;
+        log_debug("Fetching UniProt page $page_num: $url");
+
         my $res = _get(url => $url);
 
         my $text = $res->{content} // "";
@@ -151,22 +174,35 @@ sub fetch_uniprot_receptors {
         my @lines = split(/\r?\n/, $text);
         last if !@lines;
 
-        my @headers = split(/\t/, shift @lines);
+        # UniProt repeats the TSV header row on every page.  Capture it from
+        # the first page; on subsequent pages simply discard it.
+        my $header_line = shift @lines;
+        if (!@col_headers) {
+            @col_headers = split(/\t/, $header_line);
+        }
 
         for my $line (@lines) {
             next if $line !~ /\S/;
             my @cols = split(/\t/, $line, -1);
 
             # pad to headers length
-            push @cols, ("") x (@headers - @cols) if @cols < @headers;
+            push @cols, ("") x (@col_headers - @cols) if @cols < @col_headers;
 
             my %row;
-            @row{@headers} = @cols;
+            @row{@col_headers} = @cols;
             push @results, \%row;
         }
 
-        my $link = $res->{headers}{link} // $res->{headers}{Link} // "";
-        $url = _next_link($link);
+        # HTTP::Tiny normalises all header names to lowercase, so only check
+        # 'link'.  It may be a plain string or an array-ref – _next_link
+        # handles both forms.
+        $url = _next_link($res->{headers}{link});
+
+        if (defined $url) {
+            log_debug("Next page link found; continuing pagination.");
+        } else {
+            log_debug("No next page link; pagination complete after $page_num page(s).");
+        }
     }
 
     log_info("Found " . scalar(@results) . " human membrane-bound receptor entries in UniProt.");
@@ -329,7 +365,7 @@ sub build_output_row {
 
 sub write_tsv {
     my ($path, $rows) = @_;
-    open(my $fh, ">":encoding(UTF-8)", $path) or die "Cannot open '$path' for writing: $!\n";
+    open(my $fh, ">:encoding(UTF-8)", $path) or die "Cannot open '$path' for writing: $!\n";
 
     print $fh join("\t", @OUTPUT_FIELDNAMES) . "\n";
     for my $row (@$rows) {
